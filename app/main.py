@@ -8,15 +8,12 @@ import json
 from datetime import datetime
 import os
 import logging
-import asyncio
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LoveChat API")
 
-# Разрешаем CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,7 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Подключаем роутеры
 app.include_router(auth.router)
 app.include_router(messages.router)
 
@@ -42,21 +38,19 @@ async def health():
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
-    """WebSocket эндпоинт для реального времени"""
     await websocket.accept()
     
     # Сохраняем соединение
     active_connections[user_id] = websocket
-    logger.info(f"✅ User {user_id} connected. Active users: {list(active_connections.keys())}")
+    logger.info(f"✅ User {user_id} connected. Active: {list(active_connections.keys())}")
     
     try:
         while True:
-            # Ждем сообщение от клиента
             data = await websocket.receive_text()
-            logger.info(f"📨 Received message from user {user_id}: {data[:50]}...")
+            logger.info(f"📨 Received from {user_id}: {data[:50]}")
             message_data = json.loads(data)
             
-            # Сохраняем сообщение в БД
+            # Сохраняем в БД
             async for db in get_db():
                 new_message = Message(
                     sender_id=user_id,
@@ -66,10 +60,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                 db.add(new_message)
                 await db.commit()
                 await db.refresh(new_message)
-                logger.info(f"💾 Message saved to DB with id: {new_message.id}")
                 break
             
-            # Формируем ответ
+            # Отправляем ВСЕМ кроме отправителя
             response = {
                 "id": new_message.id,
                 "sender_id": user_id,
@@ -77,21 +70,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                 "timestamp": new_message.timestamp.isoformat()
             }
             
-            # Отправляем сообщение ВСЕМ подключенным пользователям (кроме отправителя)
-            for conn_user_id, connection in active_connections.items():
-                if conn_user_id != user_id:  # Не отправляем обратно отправителю
+            for conn_id, conn in active_connections.items():
+                if conn_id != user_id:
                     try:
-                        await connection.send_text(json.dumps(response))
-                        logger.info(f"📤 Message from {user_id} to {conn_user_id} delivered")
+                        await conn.send_text(json.dumps(response))
+                        logger.info(f"📤 Sent to {conn_id}")
                     except Exception as e:
-                        logger.error(f"Failed to send to {conn_user_id}: {e}")
+                        logger.error(f"Failed to send to {conn_id}: {e}")
             
     except WebSocketDisconnect:
-        # Удаляем соединение при отключении
         if user_id in active_connections:
             del active_connections[user_id]
-        logger.info(f"❌ User {user_id} disconnected. Active users: {list(active_connections.keys())}")
+        logger.info(f"❌ User {user_id} disconnected. Active: {list(active_connections.keys())}")
     except Exception as e:
-        logger.error(f"⚠️ WebSocket error for user {user_id}: {e}")
+        logger.error(f"⚠️ Error: {e}")
         if user_id in active_connections:
             del active_connections[user_id]
